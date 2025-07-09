@@ -141,25 +141,37 @@ def process_prometheus_event(event_data: Union[Dict, Any],
     sensor_positions = np.empty((n_sensors, 3), dtype=np.float64)
     sensor_stats = np.empty((n_sensors, 9), dtype=np.float64)
     
-    # Process each unique sensor to ensure alignment
-    for sensor_idx in range(n_sensors):
-        # Get mask for this sensor
-        mask = inverse_indices == sensor_idx
-        
-        # Extract data for this sensor
-        sensor_times = times[mask]
-        sensor_charges = charges[mask]
-        
-        # Get sensor position (use first occurrence) - optimized
-        first_hit_idx = np.argmax(mask)  # Faster than np.where for first occurrence
-        sensor_positions[sensor_idx] = [
-            sensor_pos_x[first_hit_idx],
-            sensor_pos_y[first_hit_idx], 
-            sensor_pos_z[first_hit_idx]
+    # Optimized processing using np.split for better performance
+    # Sort all data by sensor index for efficient splitting
+    sort_order = np.argsort(inverse_indices)
+    sorted_times = times[sort_order]
+    sorted_charges = charges[sort_order]
+    sorted_positions_x = sensor_pos_x[sort_order]
+    sorted_positions_y = sensor_pos_y[sort_order]
+    sorted_positions_z = sensor_pos_z[sort_order]
+    sorted_indices = inverse_indices[sort_order]
+    
+    # Find split points for each sensor
+    split_points = np.where(np.diff(sorted_indices) != 0)[0] + 1
+    
+    # Split the data into per-sensor arrays
+    sensor_times_list = np.split(sorted_times, split_points)
+    sensor_charges_list = np.split(sorted_charges, split_points)
+    sensor_pos_x_list = np.split(sorted_positions_x, split_points)
+    sensor_pos_y_list = np.split(sorted_positions_y, split_points)
+    sensor_pos_z_list = np.split(sorted_positions_z, split_points)
+    
+    # Process each sensor efficiently
+    for i in range(n_sensors):
+        # Extract sensor position (use first element of each split)
+        sensor_positions[i] = [
+            sensor_pos_x_list[i][0],
+            sensor_pos_y_list[i][0],
+            sensor_pos_z_list[i][0]
         ]
         
-        # Compute summary statistics for this sensor - same index ensures alignment
-        sensor_stats[sensor_idx] = process_sensor_data(sensor_times, sensor_charges, grouping_window_ns)
+        # Compute summary statistics for this sensor
+        sensor_stats[i] = process_sensor_data(sensor_times_list[i], sensor_charges_list[i], grouping_window_ns)
     
     return sensor_positions, sensor_stats
 
@@ -202,13 +214,12 @@ def _group_hits_by_window(times: np.ndarray, charges: np.ndarray,
     group_ids = np.cumsum(group_boundaries)
     
     # Use bincount for efficient grouping
-    n_groups = group_ids[-1]
     grouped_charges = np.bincount(group_ids - 1, weights=charges_sorted)
     
-    # Get the first time for each group
-    grouped_times = np.empty(n_groups, dtype=np.float64)
-    for i in range(n_groups):
-        grouped_times[i] = times_sorted[group_ids == i + 1][0]
+    # Most efficient approach to get first time for each group
+    # Use boolean indexing to find first occurrence of each group
+    first_occurrence_mask = np.concatenate(([True], np.diff(group_ids) > 0))
+    grouped_times = times_sorted[first_occurrence_mask]
     
     return grouped_times, grouped_charges
 

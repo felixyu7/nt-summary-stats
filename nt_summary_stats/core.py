@@ -139,6 +139,7 @@ def compute_summary_stats_batch(times_list: list, charges_list: list) -> np.ndar
     # Pre-allocate results array for better performance
     results = np.empty((n_sensors, 9), dtype=np.float64)
     
+    # Efficient batch processing
     for i, (times, charges) in enumerate(zip(times_list, charges_list)):
         results[i] = compute_summary_stats(times, charges)
     
