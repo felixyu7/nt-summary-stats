@@ -6,13 +6,19 @@ including processing full events and extracting sensor data.
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Union, Optional
+from typing import Dict, List, Tuple, Union, Optional, Any
 from .core import compute_summary_stats
+
+try:
+    import awkward as ak
+    HAS_AWKWARD = True
+except ImportError:
+    HAS_AWKWARD = False
 
 
 def process_sensor_data(sensor_times: Union[np.ndarray, list], 
                        sensor_charges: Optional[Union[np.ndarray, list]] = None,
-                       grouping_window_ns: Optional[float] = None) -> Dict[str, float]:
+                       grouping_window_ns: Optional[float] = None) -> np.ndarray:
     """
     Process sensor data with optional time-based grouping.
     
@@ -25,7 +31,7 @@ def process_sensor_data(sensor_times: Union[np.ndarray, list],
         grouping_window_ns: Time window for grouping hits (in ns). If None, no grouping is performed.
         
     Returns:
-        Dictionary containing the 9 summary statistics for the sensor
+        np.ndarray containing the 9 summary statistics for the sensor (same order as compute_summary_stats)
         
     Example:
         >>> from nt_summary_stats import process_sensor_data
@@ -61,24 +67,30 @@ def process_sensor_data(sensor_times: Union[np.ndarray, list],
     return compute_summary_stats(grouped_times, grouped_charges)
 
 
-def process_prometheus_event(event_data: Dict, 
-                           grouping_window_ns: Optional[float] = None) -> Tuple[np.ndarray, List[Dict[str, float]]]:
+def process_prometheus_event(event_data: Union[Dict, Any], 
+                           grouping_window_ns: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray]:
     """
     Process a full Prometheus event to extract sensor positions and summary statistics.
     
-    This function processes a Prometheus event dictionary, groups photon hits by sensor,
+    This function processes a Prometheus event (dictionary or Awkward array), groups photon hits by sensor,
     and computes summary statistics for each sensor that has hits.
     
     Args:
-        event_data: Prometheus event dictionary containing 'photons' key
+        event_data: Prometheus event data containing photon information. Can be:
+                   - Dictionary with 'photons' key containing sensor data
+                   - Awkward array with 'photons' field containing sensor data
+                   - Direct photon data structure (dict or awkward array)
         grouping_window_ns: Time window for grouping hits within each sensor (in ns). If None, no grouping is performed.
         
     Returns:
         Tuple containing:
-        - sensor_positions: Array of sensor positions (N, 3) for sensors with hits
-        - sensor_stats: List of summary statistics dictionaries, one per sensor
+        - sensor_positions: np.ndarray of shape (N_sensors, 3) containing sensor positions
+        - sensor_stats: np.ndarray of shape (N_sensors, 9) containing summary statistics
+        
+        The arrays are aligned: sensor_positions[i] corresponds to sensor_stats[i]
         
     Example:
+        >>> # Dictionary format
         >>> event = {
         ...     'photons': {
         ...         'sensor_pos_x': [0.0, 0.0, 100.0],
@@ -89,14 +101,17 @@ def process_prometheus_event(event_data: Dict,
         ...         't': [10.0, 15.0, 20.0]
         ...     }
         ... }
-        >>> # Default: no grouping
         >>> positions, stats = process_prometheus_event(event)
-        >>> # With grouping: group hits within 2ns windows
-        >>> positions, stats = process_prometheus_event(event, grouping_window_ns=2.0)
+        >>> 
+        >>> # Awkward array format (if awkward is available)
+        >>> import awkward as ak
+        >>> event_ak = ak.from_iter([event])[0]  # Convert to awkward array
+        >>> positions, stats = process_prometheus_event(event_ak)
         >>> print(len(positions))  # Number of unique sensors with hits
         2
     """
-    photons = event_data['photons']
+    # Handle different input formats
+    photons = _extract_photons_data(event_data)
     
     # Extract photon data as contiguous arrays
     sensor_pos_x = np.asarray(photons['sensor_pos_x'], dtype=np.float64)
@@ -114,7 +129,7 @@ def process_prometheus_event(event_data: Dict,
     
     # Handle empty event
     if len(times) == 0:
-        return np.empty((0, 3), dtype=np.float64), []
+        return np.empty((0, 3), dtype=np.float64), np.empty((0, 9), dtype=np.float64)
     
     # Group photons by sensor (string_id, sensor_id)
     sensor_keys = np.column_stack((string_ids, sensor_ids))
@@ -122,11 +137,11 @@ def process_prometheus_event(event_data: Dict,
     
     n_sensors = len(unique_sensors)
     
-    # Pre-allocate results arrays
+    # Pre-allocate results arrays - ensuring perfect alignment
     sensor_positions = np.empty((n_sensors, 3), dtype=np.float64)
-    sensor_stats = [None] * n_sensors
+    sensor_stats = np.empty((n_sensors, 9), dtype=np.float64)
     
-    # Process each unique sensor
+    # Process each unique sensor to ensure alignment
     for sensor_idx in range(n_sensors):
         # Get mask for this sensor
         mask = inverse_indices == sensor_idx
@@ -143,7 +158,7 @@ def process_prometheus_event(event_data: Dict,
             sensor_pos_z[first_hit_idx]
         ]
         
-        # Compute summary statistics for this sensor
+        # Compute summary statistics for this sensor - same index ensures alignment
         sensor_stats[sensor_idx] = process_sensor_data(sensor_times, sensor_charges, grouping_window_ns)
     
     return sensor_positions, sensor_stats
@@ -196,3 +211,69 @@ def _group_hits_by_window(times: np.ndarray, charges: np.ndarray,
         grouped_times[i] = times_sorted[group_ids == i + 1][0]
     
     return grouped_times, grouped_charges
+
+
+def _extract_photons_data(event_data: Union[Dict, Any]) -> Dict:
+    """
+    Extract photons data from different input formats.
+    
+    Args:
+        event_data: Event data in various formats (dict, awkward array, etc.)
+        
+    Returns:
+        Dictionary with photon data fields
+        
+    Raises:
+        ValueError: If the input format is not supported or photon data cannot be extracted
+    """
+    # Case 1: Dictionary with 'photons' key
+    if isinstance(event_data, dict) and 'photons' in event_data:
+        return event_data['photons']
+    
+    # Case 2: Awkward array with 'photons' field
+    if HAS_AWKWARD and hasattr(event_data, 'photons'):
+        photons = event_data.photons
+        # Convert awkward array fields to dict
+        result = {}
+        for field in ['sensor_pos_x', 'sensor_pos_y', 'sensor_pos_z', 'string_id', 'sensor_id', 't']:
+            if hasattr(photons, field):
+                result[field] = ak.to_numpy(getattr(photons, field))
+            else:
+                raise ValueError(f"Required field '{field}' not found in photons data")
+        
+        # Handle optional charge field
+        if hasattr(photons, 'charge'):
+            result['charge'] = ak.to_numpy(photons.charge)
+            
+        return result
+    
+    # Case 3: Direct photons data (dict or awkward array with photon fields)
+    if isinstance(event_data, dict):
+        # Check if this is direct photon data
+        required_fields = ['sensor_pos_x', 'sensor_pos_y', 'sensor_pos_z', 'string_id', 'sensor_id', 't']
+        if all(field in event_data for field in required_fields):
+            return event_data
+    
+    # Case 4: Awkward array with direct photon fields
+    if HAS_AWKWARD and hasattr(event_data, 'sensor_pos_x'):
+        result = {}
+        for field in ['sensor_pos_x', 'sensor_pos_y', 'sensor_pos_z', 'string_id', 'sensor_id', 't']:
+            if hasattr(event_data, field):
+                result[field] = ak.to_numpy(getattr(event_data, field))
+            else:
+                raise ValueError(f"Required field '{field}' not found in event data")
+        
+        # Handle optional charge field
+        if hasattr(event_data, 'charge'):
+            result['charge'] = ak.to_numpy(event_data.charge)
+            
+        return result
+    
+    # If we get here, the format is not supported
+    raise ValueError(
+        "Unsupported event_data format. Expected:\n"
+        "- Dictionary with 'photons' key\n"
+        "- Awkward array with 'photons' field\n"
+        "- Direct photon data (dict or awkward array) with required fields:\n"
+        "  ['sensor_pos_x', 'sensor_pos_y', 'sensor_pos_z', 'string_id', 'sensor_id', 't']"
+    )
