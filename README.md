@@ -24,7 +24,7 @@ print(stats['first_pulse_time'])          # 10.0
 print(stats['charge_weighted_mean_time']) # 26.0
 ```
 
-Process Prometheus events:
+Process [Prometheus](https://github.com/Harvard-Neutrino/prometheus) events:
 
 ```python
 from nt_summary_stats import process_prometheus_event
