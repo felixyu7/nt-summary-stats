@@ -41,8 +41,11 @@ event_data = {
     }
 }
 
-# Returns: (positions, stats)
+# Default: no grouping (uses all hits as-is)
 sensor_positions, sensor_stats = process_prometheus_event(event_data)
+
+# Optional: group hits within time windows
+sensor_positions, sensor_stats = process_prometheus_event(event_data, grouping_window_ns=2.0)
 # sensor_positions: np.ndarray, shape (N_sensors, 3), dtype: float64
 # sensor_stats: list[dict[str, float]], length N_sensors
 ```
@@ -56,7 +59,10 @@ from nt_summary_stats import process_sensor_data
 sensor_times = [10.0, 10.5, 15.0, 100.0]    # list[float] or np.ndarray(N,)
 sensor_charges = [1.0, 0.5, 2.0, 1.0]       # list[float] or np.ndarray(N,), optional
 
-# Returns: dict[str, float]
+# Default: no grouping (uses all hits as-is)
+stats = process_sensor_data(sensor_times, sensor_charges)
+
+# Optional: group hits within time windows
 stats = process_sensor_data(sensor_times, sensor_charges, grouping_window_ns=2.0)
 ```
 
@@ -86,22 +92,22 @@ As described in the [IceCube paper](https://arxiv.org/abs/2101.11589).
 
 **Returns:** `dict[str, float]` - dictionary with 9 summary statistics
 
-### `process_prometheus_event(event_data, grouping_window_ns=2.0)`
+### `process_prometheus_event(event_data, grouping_window_ns=None)`
 
 **Args:**
 - `event_data`: `dict` - Prometheus event with `photons` key containing sensor data
-- `grouping_window_ns`: `float` - time window for grouping hits (default: 2.0 ns)
+- `grouping_window_ns`: `float` or `None` - time window for grouping hits (default: None, no grouping)
 
 **Returns:** `tuple[np.ndarray, list[dict]]`
 - `sensor_positions`: `np.ndarray`, shape `(N_sensors, 3)` - sensor positions
 - `sensor_stats`: `list[dict[str, float]]` - statistics for each sensor
 
-### `process_sensor_data(sensor_times, sensor_charges=None, grouping_window_ns=2.0)`
+### `process_sensor_data(sensor_times, sensor_charges=None, grouping_window_ns=None)`
 
 **Args:**
 - `sensor_times`: `np.ndarray` or `list`, shape `(N,)` - hit times for sensor
 - `sensor_charges`: `np.ndarray` or `list`, shape `(N,)` - hit charges (optional, defaults to 1.0)
-- `grouping_window_ns`: `float` - time window for grouping hits (default: 2.0 ns)
+- `grouping_window_ns`: `float` or `None` - time window for grouping hits (default: None, no grouping)
 
 **Returns:** `dict[str, float]` - dictionary with 9 summary statistics
 

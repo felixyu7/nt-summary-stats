@@ -12,7 +12,7 @@ from .core import compute_summary_stats
 
 def process_sensor_data(sensor_times: Union[np.ndarray, list], 
                        sensor_charges: Optional[Union[np.ndarray, list]] = None,
-                       grouping_window_ns: float = 2.0) -> Dict[str, float]:
+                       grouping_window_ns: Optional[float] = None) -> Dict[str, float]:
     """
     Process sensor data with optional time-based grouping.
     
@@ -22,17 +22,19 @@ def process_sensor_data(sensor_times: Union[np.ndarray, list],
     Args:
         sensor_times: Array of hit times for the sensor (in ns)
         sensor_charges: Array of hit charges. If None, assumes charge=1 for each hit
-        grouping_window_ns: Time window for grouping hits (in ns). Default is 2.0 ns
+        grouping_window_ns: Time window for grouping hits (in ns). If None, no grouping is performed.
         
     Returns:
         Dictionary containing the 9 summary statistics for the sensor
         
     Example:
         >>> from nt_summary_stats import process_sensor_data
-        >>> times = [10.0, 10.5, 15.0, 100.0]  # Two hits close together
+        >>> times = [10.0, 10.5, 15.0, 100.0]
         >>> charges = [1.0, 0.5, 2.0, 1.0]
+        >>> # Default: no grouping
+        >>> stats = process_sensor_data(times, charges)
+        >>> # With grouping: group hits within 2ns windows
         >>> stats = process_sensor_data(times, charges, grouping_window_ns=2.0)
-        >>> # The first two hits will be grouped together
     """
     # Convert to numpy arrays
     sensor_times = np.asarray(sensor_times, dtype=np.float64)
@@ -47,7 +49,7 @@ def process_sensor_data(sensor_times: Union[np.ndarray, list],
         return compute_summary_stats([], [])
     
     # Group hits by time window if specified
-    if grouping_window_ns > 0:
+    if grouping_window_ns is not None and grouping_window_ns > 0:
         grouped_times, grouped_charges = _group_hits_by_window(
             sensor_times, sensor_charges, grouping_window_ns
         )
@@ -60,7 +62,7 @@ def process_sensor_data(sensor_times: Union[np.ndarray, list],
 
 
 def process_prometheus_event(event_data: Dict, 
-                           grouping_window_ns: float = 2.0) -> Tuple[np.ndarray, List[Dict[str, float]]]:
+                           grouping_window_ns: Optional[float] = None) -> Tuple[np.ndarray, List[Dict[str, float]]]:
     """
     Process a full Prometheus event to extract sensor positions and summary statistics.
     
@@ -69,7 +71,7 @@ def process_prometheus_event(event_data: Dict,
     
     Args:
         event_data: Prometheus event dictionary containing 'photons' key
-        grouping_window_ns: Time window for grouping hits within each sensor (in ns)
+        grouping_window_ns: Time window for grouping hits within each sensor (in ns). If None, no grouping is performed.
         
     Returns:
         Tuple containing:
@@ -87,7 +89,10 @@ def process_prometheus_event(event_data: Dict,
         ...         't': [10.0, 15.0, 20.0]
         ...     }
         ... }
+        >>> # Default: no grouping
         >>> positions, stats = process_prometheus_event(event)
+        >>> # With grouping: group hits within 2ns windows
+        >>> positions, stats = process_prometheus_event(event, grouping_window_ns=2.0)
         >>> print(len(positions))  # Number of unique sensors with hits
         2
     """
