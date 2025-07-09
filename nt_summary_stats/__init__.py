@@ -17,8 +17,42 @@ The 9 summary statistics are:
 9. Charge weighted standard deviation time
 """
 
-from .core import compute_summary_stats
+# Try to import the optimized C++ implementation first
+try:
+    from ._cpp_core import compute_summary_stats as _cpp_compute_summary_stats
+    from ._cpp_core import compute_summary_stats_batch as _cpp_compute_summary_stats_batch
+    _HAS_CPP_EXTENSION = True
+except ImportError:
+    _HAS_CPP_EXTENSION = False
+
+# Always import the Python fallback
+from .core import compute_summary_stats as _py_compute_summary_stats
+from .core import compute_summary_stats_batch as _py_compute_summary_stats_batch
 from .prometheus import process_prometheus_event, process_sensor_data
 
+# Choose the best available implementation
+if _HAS_CPP_EXTENSION:
+    # Use C++ implementation for better performance
+    compute_summary_stats = _cpp_compute_summary_stats
+    compute_summary_stats_batch = _cpp_compute_summary_stats_batch
+else:
+    # Fallback to Python implementation
+    compute_summary_stats = _py_compute_summary_stats
+    compute_summary_stats_batch = _py_compute_summary_stats_batch
+
 __version__ = "0.1.0"
-__all__ = ["compute_summary_stats", "process_prometheus_event", "process_sensor_data"]
+__all__ = ["compute_summary_stats", "compute_summary_stats_batch", "process_prometheus_event", "process_sensor_data"]
+
+# Expose information about which implementation is being used
+def get_implementation_info():
+    """
+    Get information about which implementation is currently being used.
+    
+    Returns:
+        dict: Information about the current implementation
+    """
+    return {
+        "has_cpp_extension": _HAS_CPP_EXTENSION,
+        "using_cpp": _HAS_CPP_EXTENSION,
+        "version": __version__,
+    }
