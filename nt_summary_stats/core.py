@@ -55,8 +55,24 @@ def compute_summary_stats(times: Union[np.ndarray, list],
     if len(times) != len(charges):
         raise ValueError(f"times and charges must have the same length, got {len(times)} and {len(charges)}")
     
-    # Check if already sorted to avoid unnecessary sorting
-    if len(times) > 1 and np.all(times[:-1] <= times[1:]):
+    n_times = len(times)
+    
+    # Fast path for single pulse
+    if n_times == 1:
+        return _single_pulse_stats(times[0], charges[0])
+    
+    # Optimized sorting check using early termination
+    is_sorted = True
+    for i in range(1, min(n_times, 100)):  # Check first 100 elements for early termination
+        if times[i-1] > times[i]:
+            is_sorted = False
+            break
+    
+    if is_sorted and n_times > 100:
+        # Check remaining elements if first 100 were sorted
+        is_sorted = np.all(times[99:-1] <= times[100:])
+    
+    if is_sorted:
         times_sorted = times
         charges_sorted = charges
     else:
@@ -69,36 +85,33 @@ def compute_summary_stats(times: Union[np.ndarray, list],
     first_pulse_time = times_sorted[0]
     last_pulse_time = times_sorted[-1]
     
-    # Optimized time window calculations using searchsorted
-    time_100ns_cutoff = first_pulse_time + 100.0
-    time_500ns_cutoff = first_pulse_time + 500.0
+    # Combined time window calculations using single searchsorted call
+    time_cutoffs = np.array([first_pulse_time + 100.0, first_pulse_time + 500.0])
+    time_indices = np.searchsorted(times_sorted, time_cutoffs, side='right')
+    idx_100ns, idx_500ns = time_indices[0], time_indices[1]
     
-    idx_100ns = np.searchsorted(times_sorted, time_100ns_cutoff, side='right')
-    idx_500ns = np.searchsorted(times_sorted, time_500ns_cutoff, side='right')
-    
-    charge_100ns = np.sum(charges_sorted[:idx_100ns])
-    charge_500ns = np.sum(charges_sorted[:idx_500ns])
-    
-    # Efficient percentile calculations using cumulative sum
+    # Optimized charge calculations - reuse cumulative sum
     cumulative_charge = np.cumsum(charges_sorted)
-    charge_20_percent = 0.2 * total_charge
-    charge_50_percent = 0.5 * total_charge
+    charge_100ns = cumulative_charge[idx_100ns - 1] if idx_100ns > 0 else 0.0
+    charge_500ns = cumulative_charge[idx_500ns - 1] if idx_500ns > 0 else 0.0
     
-    idx_20 = np.searchsorted(cumulative_charge, charge_20_percent, side='right')
-    idx_50 = np.searchsorted(cumulative_charge, charge_50_percent, side='right')
+    # Efficient percentile calculations using existing cumulative sum
+    charge_thresholds = np.array([0.2 * total_charge, 0.5 * total_charge])
+    percentile_indices = np.searchsorted(cumulative_charge, charge_thresholds, side='right')
     
-    # Ensure indices are within bounds
-    n_times = len(times_sorted)
-    charge_20_percent_time = times_sorted[min(idx_20, n_times - 1)]
-    charge_50_percent_time = times_sorted[min(idx_50, n_times - 1)]
+    # Ensure indices are within bounds and get times
+    idx_20 = min(percentile_indices[0], n_times - 1)
+    idx_50 = min(percentile_indices[1], n_times - 1)
+    charge_20_percent_time = times_sorted[idx_20]
+    charge_50_percent_time = times_sorted[idx_50]
     
-    # Vectorized weighted statistics
+    # Optimized weighted statistics
     if total_charge > 0:
         charge_weighted_mean_time = np.dot(times_sorted, charges_sorted) / total_charge
-        # Use more efficient variance calculation
-        time_diff = times_sorted - charge_weighted_mean_time
-        charge_weighted_var = np.dot(charges_sorted, time_diff * time_diff) / total_charge
-        charge_weighted_std_time = np.sqrt(charge_weighted_var)
+        # More efficient variance calculation avoiding intermediate array
+        charge_weighted_var = (np.dot(charges_sorted, times_sorted * times_sorted) / total_charge - 
+                             charge_weighted_mean_time * charge_weighted_mean_time)
+        charge_weighted_std_time = np.sqrt(max(0.0, charge_weighted_var))  # Ensure non-negative
     else:
         charge_weighted_mean_time = 0.0
         charge_weighted_std_time = 0.0
@@ -119,6 +132,21 @@ def compute_summary_stats(times: Union[np.ndarray, list],
 def _empty_stats() -> np.ndarray:
     """Return empty statistics array for zero-length inputs."""
     return np.zeros(9, dtype=np.float64)
+
+
+def _single_pulse_stats(time: float, charge: float) -> np.ndarray:
+    """Fast path for single pulse statistics computation."""
+    return np.array([
+        charge,           # total_charge
+        charge,           # charge_100ns (all charge is within 100ns)
+        charge,           # charge_500ns (all charge is within 500ns)
+        time,             # first_pulse_time
+        time,             # last_pulse_time
+        time,             # charge_20_percent_time (single pulse)
+        time,             # charge_50_percent_time (single pulse)
+        time,             # charge_weighted_mean_time (single pulse)
+        0.0               # charge_weighted_std_time (no variance with single pulse)
+    ], dtype=np.float64)
 
 
 def compute_summary_stats_batch(times_list: list, charges_list: list) -> np.ndarray:
