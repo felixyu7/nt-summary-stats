@@ -179,49 +179,49 @@ def process_prometheus_event(event_data: Union[Dict, Any],
 def _group_hits_by_window(times: np.ndarray, charges: np.ndarray, 
                          window_ns: float) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Group hits within a time window, summing charges for grouped hits.
+    Compress arrays by grouping values that lie within `window_ns` of the first element of each group.
     
-    This is a simplified version of the grouping logic used in the Mercury model.
-    Hits within the specified time window are grouped together, with their charges
-    summed and the earliest time used as the group time.
+    This matches the optimized grouping logic used in Mercury and the training dataloader.
     
-    Args:
-        times: Array of hit times (must be sorted)
-        charges: Array of hit charges
-        window_ns: Time window for grouping (in ns)
+    Parameters
+    ----------
+    times : array_like
+        Input hit times (any order, any numeric dtype).
+    charges : array_like  
+        Input hit charges corresponding to times.
+    window_ns : float
+        Width of the inclusion window (inclusive on the right).
         
-    Returns:
-        Tuple of (grouped_times, grouped_charges)
+    Returns
+    -------
+    grouped_times : ndarray
+        Representative values (the first element in each group).
+    grouped_charges : ndarray
+        Sum of charges in each group.
     """
     if len(times) == 0:
         return np.array([]), np.array([])
     
-    # Check if already sorted to avoid unnecessary sorting
-    if len(times) > 1 and np.all(times[:-1] <= times[1:]):
-        times_sorted = times
-        charges_sorted = charges
-    else:
-        sort_idx = np.argsort(times)
-        times_sorted = times[sort_idx]
-        charges_sorted = charges[sort_idx]
+    # Sort both arrays by time
+    sort_idx = np.argsort(times)
+    sorted_times = times[sort_idx]
+    sorted_charges = charges[sort_idx]
     
-    if len(times_sorted) == 1:
-        return times_sorted.copy(), charges_sorted.copy()
-    
-    # Vectorized approach for better performance
-    time_diffs = np.diff(times_sorted)
-    group_boundaries = np.concatenate(([True], time_diffs > window_ns))
-    group_ids = np.cumsum(group_boundaries)
-    
-    # Use bincount for efficient grouping
-    grouped_charges = np.bincount(group_ids - 1, weights=charges_sorted)
-    
-    # Most efficient approach to get first time for each group
-    # Use boolean indexing to find first occurrence of each group
-    first_occurrence_mask = np.concatenate(([True], np.diff(group_ids) > 0))
-    grouped_times = times_sorted[first_occurrence_mask]
-    
-    return grouped_times, grouped_charges
+    # endpoints[i] == first index where value > sorted_times[i] + window_ns
+    endpoints = np.searchsorted(sorted_times,
+                               sorted_times + window_ns,
+                               side='right')
+
+    reps, charge_sums = [], []
+    i = 0
+    n = sorted_times.size
+    while i < n:
+        reps.append(sorted_times[i])
+        j = endpoints[i]       # jump to the start of the next group
+        charge_sums.append(np.sum(sorted_charges[i:j]))
+        i = j
+
+    return np.asarray(reps), np.asarray(charge_sums)
 
 
 def _extract_photons_data(event_data: Union[Dict, Any]) -> Dict:
