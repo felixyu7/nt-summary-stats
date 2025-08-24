@@ -20,5 +20,5 @@ The 9 summary statistics are:
 from .core import compute_summary_stats
 from .prometheus import process_prometheus_event, process_sensor_data
 
-__version__ = "0.1.0"
+__version__ = "0.1.3"
 __all__ = ["compute_summary_stats", "process_prometheus_event", "process_sensor_data"]
