@@ -176,52 +176,75 @@ def process_prometheus_event(event_data: Union[Dict, Any],
     return sensor_positions, sensor_stats
 
 
-def _group_hits_by_window(times: np.ndarray, charges: np.ndarray, 
-                         window_ns: float) -> Tuple[np.ndarray, np.ndarray]:
+def _group_hits_by_window(hit_times, hit_charges, time_window, return_counts=False):
     """
-    Compress arrays by grouping values that lie within `window_ns` of the first element of each group.
-    
-    This matches the optimized grouping logic used in Mercury and the training dataloader.
-    
+    Group hits into fixed time windows, returning the first actual hit time
+    in each non-empty window and the sum of charges in that window.
+
     Parameters
     ----------
-    times : array_like
-        Input hit times (any order, any numeric dtype).
-    charges : array_like  
-        Input hit charges corresponding to times.
-    window_ns : float
-        Width of the inclusion window (inclusive on the right).
-        
+    hit_times : array-like, shape (N,)
+        Hit times in nanoseconds.
+    hit_charges : array-like, shape (N,)
+        Charge per hit (e.g., photoelectrons). Must align with hit_times.
+    time_window : float
+        Window size in nanoseconds (> 0).
+    return_counts : bool, optional (default: False)
+        If True, also return the number of hits per window.
+
     Returns
     -------
-    grouped_times : ndarray
-        Representative values (the first element in each group).
-    grouped_charges : ndarray
-        Sum of charges in each group.
+    grouped_times : np.ndarray, shape (M,)
+        First actual hit time in each non-empty window (ascending by window).
+    window_charges : np.ndarray, shape (M,)
+        Sum of hit_charges within each window.
+    hit_counts : np.ndarray, shape (M,), optional
+        Number of hits in each window (only if return_counts=True).
     """
-    if len(times) == 0:
-        return np.array([]), np.array([])
-    
-    # Sort both arrays by time
-    sort_idx = np.argsort(times)
-    sorted_times = times[sort_idx]
-    sorted_charges = charges[sort_idx]
-    
-    # endpoints[i] == first index where value > sorted_times[i] + window_ns
-    endpoints = np.searchsorted(sorted_times,
-                               sorted_times + window_ns,
-                               side='right')
+    ht = np.asarray(hit_times)
+    hc = np.asarray(hit_charges)
 
-    reps, charge_sums = [], []
-    i = 0
-    n = sorted_times.size
-    while i < n:
-        reps.append(sorted_times[i])
-        j = endpoints[i]       # jump to the start of the next group
-        charge_sums.append(np.sum(sorted_charges[i:j]))
-        i = j
+    if ht.size == 0:
+        if return_counts:
+            return ht[:0], ht[:0].astype(float), ht[:0]
+        else:
+            return ht[:0], ht[:0].astype(float)
 
-    return np.asarray(reps), np.asarray(charge_sums)
+    if ht.shape != hc.shape:
+        raise ValueError("hit_times and hit_charges must have the same shape.")
+    if time_window <= 0:
+        raise ValueError("time_window must be positive.")
+
+    # Stable sort by time (stable ensures the first time in each bin is preserved if equal times occur).
+    order = np.argsort(ht, kind="mergesort")
+    st = ht[order]
+    sc = hc[order]
+
+    # Compute monotone bin labels with numerically robust arithmetic.
+    if np.issubdtype(st.dtype, np.integer) and float(time_window).is_integer():
+        tw = np.int64(time_window)
+        bins = (st - st[0]) // tw
+    else:
+        # Cast to float64 and shift by st[0] for better precision at boundaries.
+        bins = np.floor((st - st[0]).astype(np.float64) / float(time_window)).astype(np.int64)
+
+    # Run-length encode the (sorted, hence monotone) bin labels.
+    changes = np.empty(bins.size, dtype=bool)
+    changes[0] = True
+    np.not_equal(bins[1:], bins[:-1], out=changes[1:])
+    starts = np.flatnonzero(changes)  # start index of each bin-run
+
+    # First hit time per non-empty bin:
+    grouped_times = st[starts]
+
+    # Aggregate charges per bin efficiently:
+    window_charges = np.add.reduceat(sc, starts)
+
+    if return_counts:
+        hit_counts = np.diff(np.r_[starts, st.size])
+        return grouped_times, window_charges, hit_counts
+    else:
+        return grouped_times, window_charges
 
 
 def _extract_photons_data(event_data: Union[Dict, Any]) -> Dict:

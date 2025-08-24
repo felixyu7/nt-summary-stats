@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nt_summary_stats"
-version = "0.1.0"
+version = "0.1.2"
 description = "Fast computation of traditional summary statistics for neutrino telescopes"
 authors = [
     {name = "Felix J. Yu", email = "felixyu@g.harvard.edu"}
