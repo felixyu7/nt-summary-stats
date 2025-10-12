@@ -28,7 +28,7 @@ from .event import process_event, process_sensor_data
 native_available = _backend.native_available
 using_native_backend = _backend.using_native_backend
 
-__version__ = "0.1.3"
+__version__ = "1.0"
 
 def compute_summary_stats(times, charges):
     """Compute summary statistics, preferring the native backend when available."""

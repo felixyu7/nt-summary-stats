@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent
 ext_modules = [
     Pybind11Extension(
         "nt_summary_stats._native",
-        [str(ROOT / "src" / "nt_summary_stats.cpp")],
+        ["src/nt_summary_stats.cpp"],
         extra_compile_args=["-O3"],
         cxx_std=17,
     ),

@@ -1,6 +1,6 @@
 # NT Summary Stats
 
-Fast computation of traditional summary statistics for neutrino telescopes.
+Fast computation (C++) of traditional summary statistics for neutrino telescopes for Python. The summary stats computed are based off of this [paper](https://arxiv.org/abs/2101.11589).
 
 ## Install
 
@@ -29,8 +29,7 @@ print(stats[3])  # first_pulse_time: 10.0
 print(stats[7])  # charge_weighted_mean_time: 26.0
 ```
 
-Process detector events (e.g. [Prometheus](https://github.com/Harvard-Neutrino/prometheus)) that expose the
-required photon-level keys:
+Process detector events that expose the required photon-level keys:
 
 ```python
 from nt_summary_stats import process_event
