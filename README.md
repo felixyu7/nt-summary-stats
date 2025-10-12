@@ -8,6 +8,11 @@ Fast computation of traditional summary statistics for neutrino telescopes.
 pip install nt_summary_stats
 ```
 
+The wheel ships with the C++ backend enabled by default; source installs will build the
+`nt_summary_stats._native` extension automatically (requires a C++17 compiler and
+`pybind11`). Set `NTSS_DISABLE_NATIVE=1` if you need to fall back to the pure NumPy
+implementation.
+
 ## Usage
 
 ```python
@@ -24,12 +29,13 @@ print(stats[3])  # first_pulse_time: 10.0
 print(stats[7])  # charge_weighted_mean_time: 26.0
 ```
 
-Process [Prometheus](https://github.com/Harvard-Neutrino/prometheus) events:
+Process detector events (e.g. [Prometheus](https://github.com/Harvard-Neutrino/prometheus)) that expose the
+required photon-level keys:
 
 ```python
-from nt_summary_stats import process_prometheus_event
+from nt_summary_stats import process_event
 
-# Input: Prometheus event dictionary
+# Input: event dictionary with required photon fields
 event_data = {
     'photons': {
         'sensor_pos_x': [0.0, 0.0, 100.0],  # list[float], length M
@@ -42,10 +48,10 @@ event_data = {
 }
 
 # Default: no grouping (uses all hits as-is)
-sensor_positions, sensor_stats = process_prometheus_event(event_data)
+sensor_positions, sensor_stats = process_event(event_data)
 
 # Optional: group hits within time windows
-sensor_positions, sensor_stats = process_prometheus_event(event_data, grouping_window_ns=2.0)
+sensor_positions, sensor_stats = process_event(event_data, grouping_window_ns=2.0)
 # sensor_positions: np.ndarray, shape (N_sensors, 3), dtype: float64
 # sensor_stats: np.ndarray, shape (N_sensors, 9), dtype: float64
 # Arrays are aligned: sensor_positions[i] corresponds to sensor_stats[i]
@@ -96,13 +102,10 @@ stats[8]  # charge_weighted_std_time: Charge-weighted standard deviation
 
 **Returns:** `np.ndarray`, shape `(9,)` - array with 9 summary statistics in order shown above
 
-### `process_prometheus_event(event_data, grouping_window_ns=None)`
+### `process_event(event_data, grouping_window_ns=None)`
 
 **Args:**
-- `event_data`: `dict` or `awkward.Array` - Prometheus event data. Supports:
-  - Dictionary with `photons` key containing sensor data
-  - Awkward array with `photons` field (requires `awkward` package)
-  - Direct photon data structure with required fields
+- `event_data`: `dict` holding photon-level arrays (either provide a top-level `photons` dictionary or store the required fields directly) with keys `sensor_pos_x`, `sensor_pos_y`, `sensor_pos_z`, `string_id`, `sensor_id`, `t`, and optional `charge`
 - `grouping_window_ns`: `float` or `None` - time window for grouping hits (default: None, no grouping)
 
 **Returns:** `tuple[np.ndarray, np.ndarray]`
