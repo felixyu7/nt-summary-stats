@@ -46,7 +46,7 @@ from .event import process_event, process_sensor_data
 native_available = _backend.native_available
 using_native_backend = _backend.using_native_backend
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 def compute_summary_stats(times, charges, extended=False):
     """
