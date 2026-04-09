@@ -19,7 +19,7 @@ implementation.
 import numpy as np
 from nt_summary_stats import compute_summary_stats
 
-# Basic usage
+# Basic usage (9 standard statistics)
 times = np.array([10.0, 15.0, 25.0, 100.0])      # shape: (N,), dtype: float
 charges = np.array([1.0, 2.0, 1.5, 0.5])         # shape: (N,), dtype: float
 stats = compute_summary_stats(times, charges)     # returns: np.ndarray, shape (9,)
@@ -27,6 +27,12 @@ stats = compute_summary_stats(times, charges)     # returns: np.ndarray, shape (
 print(stats[0])  # total_charge: 5.0
 print(stats[3])  # first_pulse_time: 10.0
 print(stats[7])  # charge_weighted_mean_time: 26.0
+
+# Extended statistics (25 total statistics)
+extended_stats = compute_summary_stats(times, charges, extended=True)  # returns: np.ndarray, shape (25,)
+print(extended_stats.shape)  # (25,)
+print(extended_stats[9])     # charge_5_percent_time
+print(extended_stats[21])    # n_pulses: 4.0
 ```
 
 Process detector events that expose the required photon-level keys:
@@ -74,7 +80,9 @@ stats = process_sensor_data(sensor_times, sensor_charges, grouping_window_ns=2.0
 
 ## Summary Statistics
 
-Computes 9 traditional summary statistics for neutrino telescope sensors as described in the [IceCube paper](https://arxiv.org/abs/2101.11589). All functions return numpy arrays with statistics in the following order:
+Computes summary statistics for neutrino telescope sensors as described in the [IceCube paper](https://arxiv.org/abs/2101.11589). All functions return numpy arrays with statistics in the following order:
+
+### Standard Statistics (9 stats, default)
 
 ```python
 stats = compute_summary_stats(times, charges)  # shape: (9,)
@@ -91,34 +99,63 @@ stats[7]  # charge_weighted_mean_time: Charge-weighted mean time
 stats[8]  # charge_weighted_std_time: Charge-weighted standard deviation
 ```
 
+### Extended Statistics (25 stats, optional)
+
+Pass `extended=True` to compute 16 additional statistics:
+
+```python
+stats = compute_summary_stats(times, charges, extended=True)  # shape: (25,)
+
+# Includes all 9 standard statistics above, plus:
+stats[9]   # charge_5_percent_time: Time at which 5% of charge is collected
+stats[10]  # charge_10_percent_time: Time at which 10% of charge is collected
+stats[11]  # charge_25_percent_time: Time at which 25% of charge is collected
+stats[12]  # charge_75_percent_time: Time at which 75% of charge is collected
+stats[13]  # charge_90_percent_time: Time at which 90% of charge is collected
+stats[14]  # charge_95_percent_time: Time at which 95% of charge is collected
+stats[15]  # charge_10ns: Charge within 10ns of first pulse
+stats[16]  # charge_20ns: Charge within 20ns of first pulse
+stats[17]  # charge_50ns: Charge within 50ns of first pulse
+stats[18]  # charge_200ns: Charge within 200ns of first pulse
+stats[19]  # charge_1000ns: Charge within 1000ns of first pulse
+stats[20]  # charge_2000ns: Charge within 2000ns of first pulse
+stats[21]  # n_pulses: Number of input pulses (pre-grouping count)
+stats[22]  # q_max_frac: Peak charge fraction (max pulse charge / total charge)
+stats[23]  # n_string_neighbors: HLC-style neighbor count (0 outside process_event)
+stats[24]  # t_skewness: Charge-weighted time skewness (0 for < 3 pulses)
+```
+
 ## API
 
-### `compute_summary_stats(times, charges)`
+### `compute_summary_stats(times, charges, extended=False)`
 
 **Args:**
 - `times`: `np.ndarray` or `list`, shape `(N,)` - pulse arrival times in ns
 - `charges`: `np.ndarray` or `list`, shape `(N,)` - pulse charges
+- `extended`: `bool` - if `True`, compute 25 statistics; if `False` (default), compute 9
 
-**Returns:** `np.ndarray`, shape `(9,)` - array with 9 summary statistics in order shown above
+**Returns:** `np.ndarray`, shape `(9,)` or `(25,)` - array with summary statistics in order shown above
 
-### `process_event(event_data, grouping_window_ns=None)`
+### `process_event(event_data, grouping_window_ns=None, extended=False)`
 
 **Args:**
 - `event_data`: `dict` holding photon-level arrays (either provide a top-level `photons` dictionary or store the required fields directly) with keys `sensor_pos_x`, `sensor_pos_y`, `sensor_pos_z`, `string_id`, `sensor_id`, `t`, and optional `charge`
 - `grouping_window_ns`: `float` or `None` - time window for grouping hits (default: None, no grouping)
+- `extended`: `bool` - if `True`, compute 25 statistics per sensor; if `False` (default), compute 9
 
 **Returns:** `tuple[np.ndarray, np.ndarray]`
 - `sensor_positions`: `np.ndarray`, shape `(N_sensors, 3)` - sensor positions
-- `sensor_stats`: `np.ndarray`, shape `(N_sensors, 9)` - statistics for each sensor (aligned with positions)
+- `sensor_stats`: `np.ndarray`, shape `(N_sensors, 9)` or `(N_sensors, 25)` - statistics for each sensor (aligned with positions)
 
-### `process_sensor_data(sensor_times, sensor_charges=None, grouping_window_ns=None)`
+### `process_sensor_data(sensor_times, sensor_charges=None, grouping_window_ns=None, extended=False)`
 
 **Args:**
 - `sensor_times`: `np.ndarray` or `list`, shape `(N,)` - hit times for sensor
 - `sensor_charges`: `np.ndarray` or `list`, shape `(N,)` - hit charges (optional, defaults to 1.0)
 - `grouping_window_ns`: `float` or `None` - time window for grouping hits (default: None, no grouping)
+- `extended`: `bool` - if `True`, compute 25 statistics; if `False` (default), compute 9
 
-**Returns:** `np.ndarray`, shape `(9,)` - array with 9 summary statistics in order shown above
+**Returns:** `np.ndarray`, shape `(9,)` or `(25,)` - array with summary statistics in order shown above
 
 ## License
 
