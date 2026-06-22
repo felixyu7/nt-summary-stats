@@ -5,7 +5,16 @@ This package provides efficient computation of summary statistics for neutrino
 telescope sensors (optical modules), as described in the IceCube paper
 (https://arxiv.org/abs/2101.11589).
 
-The 9 traditional summary statistics are:
+Statistics are selected via the ``mode`` argument: 'standard' (default, 9),
+'minimal' (4), or 'extended' (25).
+
+The 4 minimal summary statistics (mode='minimal') are:
+1. Total DOM charge
+2. Time of first pulse
+3. Charge weighted mean time
+4. Charge weighted standard deviation time
+
+The 9 standard summary statistics (mode='standard') are:
 1. Total DOM charge
 2. Charge within 100ns of first pulse
 3. Charge within 500ns of first pulse
@@ -16,7 +25,7 @@ The 9 traditional summary statistics are:
 8. Charge weighted mean time
 9. Charge weighted standard deviation time
 
-When extended=True, 16 additional statistics are computed (25 total):
+When mode='extended', 16 additional statistics are computed (25 total):
 10. Time at which 5% of charge is collected
 11. Time at which 10% of charge is collected
 12. Time at which 25% of charge is collected
@@ -46,41 +55,41 @@ from .event import process_event, process_sensor_data
 native_available = _backend.native_available
 using_native_backend = _backend.using_native_backend
 
-__version__ = "1.1"
+__version__ = "1.2"
 
-def compute_summary_stats(times, charges, extended=False):
+def compute_summary_stats(times, charges, mode="standard"):
     """
     Compute summary statistics, preferring the native backend when available.
 
     Args:
         times: Array of pulse arrival times (in ns)
         charges: Array of pulse charges
-        extended: If True, compute 25 statistics. If False (default), compute 9.
+        mode: One of 'standard' (default, 9), 'minimal' (4), or 'extended' (25).
 
     Returns:
-        np.ndarray of shape (9,) or (25,) containing summary statistics
+        np.ndarray of shape (4,), (9,), or (25,) containing summary statistics
     """
     native = _backend.get_native_module()
     if native is not None:
         times_arr = np.ascontiguousarray(times, dtype=np.float64)
         charges_arr = np.ascontiguousarray(charges, dtype=np.float64)
-        return native.compute_summary_stats(times_arr, charges_arr, extended)
-    return _compute_summary_stats_numpy(times, charges, extended)
+        return native.compute_summary_stats(times_arr, charges_arr, mode)
+    return _compute_summary_stats_numpy(times, charges, mode)
 
 
-def compute_summary_stats_numpy(times, charges, extended=False):
+def compute_summary_stats_numpy(times, charges, mode="standard"):
     """
     Explicitly use the NumPy implementation (useful for testing).
 
     Args:
         times: Array of pulse arrival times (in ns)
         charges: Array of pulse charges
-        extended: If True, compute 25 statistics. If False (default), compute 9.
+        mode: One of 'standard' (default, 9), 'minimal' (4), or 'extended' (25).
 
     Returns:
-        np.ndarray of shape (9,) or (25,) containing summary statistics
+        np.ndarray of shape (4,), (9,), or (25,) containing summary statistics
     """
-    return _compute_summary_stats_numpy(times, charges, extended)
+    return _compute_summary_stats_numpy(times, charges, mode)
 
 
 __all__ = [

@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import numpy as np
 
 from . import _backend
+from .core import _N_STATS, _validate_mode
 from .core import compute_summary_stats as _compute_summary_stats_numpy
 
 
@@ -17,7 +18,7 @@ def process_sensor_data(
     sensor_times: Union[np.ndarray, list],
     sensor_charges: Optional[Union[np.ndarray, list]] = None,
     grouping_window_ns: Optional[float] = None,
-    extended: bool = False,
+    mode: str = "standard",
 ) -> np.ndarray:
     """
     Process sensor data with optional time-based grouping.
@@ -31,26 +32,27 @@ def process_sensor_data(
         sensor_times: Hit times for the sensor
         sensor_charges: Hit charges (optional, defaults to 1.0)
         grouping_window_ns: Time window for grouping hits (default: None, no grouping)
-        extended: If True, compute 25 statistics. If False (default), compute 9.
+        mode: One of 'standard' (default, 9), 'minimal' (4), or 'extended' (25).
 
     Returns:
-        np.ndarray of shape (9,) or (25,) containing summary statistics
+        np.ndarray of shape (4,), (9,), or (25,) containing summary statistics
     """
+    _validate_mode(mode)
     native = _backend.get_native_module()
     if native is not None:
         times_arr = np.ascontiguousarray(sensor_times, dtype=np.float64)
         charges_arr = (None if sensor_charges is None
                        else np.ascontiguousarray(sensor_charges, dtype=np.float64))
-        return native.process_sensor_data(times_arr, charges_arr, grouping_window_ns, extended)
+        return native.process_sensor_data(times_arr, charges_arr, grouping_window_ns, mode)
 
-    return _process_sensor_data_numpy(sensor_times, sensor_charges, grouping_window_ns, extended)
+    return _process_sensor_data_numpy(sensor_times, sensor_charges, grouping_window_ns, mode)
 
 
 def _process_sensor_data_numpy(
     sensor_times: Union[np.ndarray, list],
     sensor_charges: Optional[Union[np.ndarray, list]] = None,
     grouping_window_ns: Optional[float] = None,
-    extended: bool = False,
+    mode: str = "standard",
 ) -> np.ndarray:
     sensor_times = np.asarray(sensor_times, dtype=np.float64)
 
@@ -60,29 +62,29 @@ def _process_sensor_data_numpy(
         sensor_charges = np.asarray(sensor_charges, dtype=np.float64)
 
     if len(sensor_times) == 0:
-        return _compute_summary_stats_numpy([], [], extended)
+        return _compute_summary_stats_numpy([], [], mode)
 
     if grouping_window_ns is not None and grouping_window_ns > 0:
         pre_grouping_n = float(len(sensor_times))
         grouped_times, grouped_charges = _group_hits_by_window(
             sensor_times, sensor_charges, grouping_window_ns
         )
-        result = _compute_summary_stats_numpy(grouped_times, grouped_charges, extended)
+        result = _compute_summary_stats_numpy(grouped_times, grouped_charges, mode)
         # Override n_pulses with pre-grouping count
-        if extended:
+        if mode == "extended":
             result[21] = pre_grouping_n
         return result
     else:
         grouped_times = sensor_times
         grouped_charges = sensor_charges
 
-    return _compute_summary_stats_numpy(grouped_times, grouped_charges, extended)
+    return _compute_summary_stats_numpy(grouped_times, grouped_charges, mode)
 
 
 def process_event(
     event_data: Dict[str, Any],
     grouping_window_ns: Optional[float] = None,
-    extended: bool = False,
+    mode: str = "standard",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Process a detector event to extract sensor positions and summary statistics.
@@ -96,13 +98,14 @@ def process_event(
     Args:
         event_data: Event dictionary with required photon fields
         grouping_window_ns: Time window for grouping hits (default: None, no grouping)
-        extended: If True, compute 25 statistics per sensor. If False (default), compute 9.
+        mode: One of 'standard' (default, 9), 'minimal' (4), or 'extended' (25) per sensor.
 
     Returns:
         Tuple of (sensor_positions, sensor_stats) where:
         - sensor_positions: np.ndarray of shape (N_sensors, 3)
-        - sensor_stats: np.ndarray of shape (N_sensors, 9) or (N_sensors, 25)
+        - sensor_stats: np.ndarray of shape (N_sensors, _N_STATS[mode])
     """
+    _validate_mode(mode)
     photons = _extract_photons_data(event_data)
 
     sensor_pos_x = np.ascontiguousarray(photons['sensor_pos_x'], dtype=np.float64)
@@ -114,7 +117,7 @@ def process_event(
     charges = photons.get('charge')
     charges_arr = None if charges is None else np.ascontiguousarray(charges, dtype=np.float64)
 
-    n_stats = 25 if extended else 9
+    n_stats = _N_STATS[mode]
     if len(times) == 0:
         return np.empty((0, 3), dtype=np.float64), np.empty((0, n_stats), dtype=np.float64)
 
@@ -130,7 +133,7 @@ def process_event(
             charges=charges_arr,
             grouping_window_ns=grouping_window_ns,
             n_threads=None,
-            extended=extended,
+            mode=mode,
         )
 
     return _process_event_arrays_numpy(
@@ -142,7 +145,7 @@ def process_event(
         times,
         charges_arr,
         grouping_window_ns,
-        extended,
+        mode,
     )
 
 
@@ -154,7 +157,7 @@ def _process_event_arrays_numpy(sensor_pos_x: np.ndarray,
                                 times: np.ndarray,
                                 charges: Optional[np.ndarray],
                                 grouping_window_ns: Optional[float],
-                                extended: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+                                mode: str = "standard") -> Tuple[np.ndarray, np.ndarray]:
     if charges is None:
         charges = np.ones_like(times, dtype=np.float64)
     else:
@@ -164,7 +167,7 @@ def _process_event_arrays_numpy(sensor_pos_x: np.ndarray,
     unique_sensors, inverse_indices = np.unique(sensor_keys, axis=0, return_inverse=True)
 
     n_sensors = len(unique_sensors)
-    n_stats = 25 if extended else 9
+    n_stats = _N_STATS[mode]
 
     sensor_positions = np.empty((n_sensors, 3), dtype=np.float64)
     sensor_stats = np.empty((n_sensors, n_stats), dtype=np.float64)
@@ -197,10 +200,10 @@ def _process_event_arrays_numpy(sensor_pos_x: np.ndarray,
             sensor_times_list[i],
             sensor_charges_list[i],
             grouping_window_ns,
-            extended,
+            mode,
         )
 
-    if extended:
+    if mode == "extended":
         # HLC-style neighbor count: same string, +-2 sensor_id, +-1000ns coincidence.
         # Pre-sort each sensor's times for the merge-scan (numpy path doesn't
         # guarantee time-sorted order within sensor groups).

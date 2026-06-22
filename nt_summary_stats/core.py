@@ -9,9 +9,19 @@ import numpy as np
 from typing import Dict, Union
 
 
+_N_STATS = {"minimal": 4, "standard": 9, "extended": 25}
+
+
+def _validate_mode(mode: str) -> None:
+    """Raise a clear error for an unrecognised mode string."""
+    if mode not in _N_STATS:
+        valid = ", ".join(repr(m) for m in _N_STATS)
+        raise ValueError(f"mode must be one of {valid}, got {mode!r}")
+
+
 def compute_summary_stats(times: Union[np.ndarray, list],
                          charges: Union[np.ndarray, list],
-                         extended: bool = False) -> np.ndarray:
+                         mode: str = "standard") -> np.ndarray:
     """
     Compute summary statistics for neutrino telescope sensors.
 
@@ -22,13 +32,19 @@ def compute_summary_stats(times: Union[np.ndarray, list],
     Args:
         times: Array of pulse arrival times (in ns)
         charges: Array of pulse charges (in arbitrary units)
-        extended: If True, compute 25 statistics (9 standard + 16 extended).
-                  If False (default), compute 9 traditional statistics.
+        mode: One of 'standard' (default, 9 stats), 'minimal' (4 stats), or
+              'extended' (25 stats = 9 standard + 16 extended).
 
     Returns:
         np.ndarray containing summary statistics:
 
-        When extended=False (9 stats):
+        When mode='minimal' (4 stats):
+        [0] total_charge: Total charge collected by the sensor
+        [1] first_pulse_time: Time of the first pulse
+        [2] charge_weighted_mean_time: Charge-weighted mean of pulse times
+        [3] charge_weighted_std_time: Charge-weighted standard deviation of pulse times
+
+        When mode='standard' (9 stats):
         [0] total_charge: Total charge collected by the sensor
         [1] charge_100ns: Charge within 100ns of first pulse
         [2] charge_500ns: Charge within 500ns of first pulse
@@ -39,7 +55,7 @@ def compute_summary_stats(times: Union[np.ndarray, list],
         [7] charge_weighted_mean_time: Charge-weighted mean of pulse times
         [8] charge_weighted_std_time: Charge-weighted standard deviation of pulse times
 
-        When extended=True (25 stats, includes above plus):
+        When mode='extended' (25 stats, includes the standard 9 plus):
         [9] charge_5_percent_time: Time at which 5% of charge is collected
         [10] charge_10_percent_time: Time at which 10% of charge is collected
         [11] charge_25_percent_time: Time at which 25% of charge is collected
@@ -65,17 +81,20 @@ def compute_summary_stats(times: Union[np.ndarray, list],
         >>> stats = compute_summary_stats(times, charges)
         >>> print(stats[0])  # total_charge
         5.0
-        >>> extended_stats = compute_summary_stats(times, charges, extended=True)
+        >>> extended_stats = compute_summary_stats(times, charges, mode='extended')
         >>> print(extended_stats.shape)  # (25,)
         (25,)
     """
+    _validate_mode(mode)
+    extended = mode == "extended"
+
     # Convert to numpy arrays for consistent handling
     times = np.asarray(times, dtype=np.float64)
     charges = np.asarray(charges, dtype=np.float64)
-    
+
     # Handle empty input
     if len(times) == 0:
-        return _empty_stats(extended)
+        return _empty_stats(mode)
 
     # Validate input lengths match
     if len(times) != len(charges):
@@ -85,8 +104,21 @@ def compute_summary_stats(times: Union[np.ndarray, list],
 
     # Fast path for single pulse
     if n_times == 1:
-        return _single_pulse_stats(times[0], charges[0], extended)
-    
+        return _single_pulse_stats(times[0], charges[0], mode)
+
+    # Minimal stats are permutation-invariant, so no sort/searchsorted is needed.
+    if mode == "minimal":
+        total_charge = float(np.sum(charges))
+        if total_charge > 0.0:
+            weighted_mean = float(np.dot(times, charges) / total_charge)
+            weighted_var = np.dot(charges, times * times) / total_charge - weighted_mean * weighted_mean
+            weighted_std = float(np.sqrt(max(0.0, weighted_var)))
+        else:
+            weighted_mean = 0.0
+            weighted_std = 0.0
+        return np.array([total_charge, float(np.min(times)), weighted_mean, weighted_std],
+                        dtype=np.float64)
+
     # Optimized sorting check using early termination
     is_sorted = True
     for i in range(1, min(n_times, 100)):  # Check first 100 elements for early termination
@@ -235,14 +267,17 @@ def compute_summary_stats(times: Union[np.ndarray, list],
         ], dtype=np.float64)
 
 
-def _empty_stats(extended: bool = False) -> np.ndarray:
+def _empty_stats(mode: str = "standard") -> np.ndarray:
     """Return empty statistics array for zero-length inputs."""
-    return np.zeros(25 if extended else 9, dtype=np.float64)
+    return np.zeros(_N_STATS[mode], dtype=np.float64)
 
 
-def _single_pulse_stats(time: float, charge: float, extended: bool = False) -> np.ndarray:
+def _single_pulse_stats(time: float, charge: float, mode: str = "standard") -> np.ndarray:
     """Fast path for single pulse statistics computation."""
-    if extended:
+    if mode == "minimal":
+        # [total_charge, first_pulse_time, weighted_mean, weighted_std]
+        return np.array([charge, time, time, 0.0], dtype=np.float64)
+    if mode == "extended":
         return np.array([
             # Standard 9 stats
             charge,           # total_charge
@@ -287,28 +322,29 @@ def _single_pulse_stats(time: float, charge: float, extended: bool = False) -> n
         ], dtype=np.float64)
 
 
-def compute_summary_stats_batch(times_list: list, charges_list: list, extended: bool = False) -> np.ndarray:
+def compute_summary_stats_batch(times_list: list, charges_list: list, mode: str = "standard") -> np.ndarray:
     """
     Compute summary statistics for multiple sensors in batch.
 
     Args:
         times_list: List of time arrays, one per sensor
         charges_list: List of charge arrays, one per sensor
-        extended: If True, compute 25 statistics per sensor. If False, compute 9.
+        mode: One of 'standard' (default, 9), 'minimal' (4), or 'extended' (25).
 
     Returns:
-        np.ndarray of shape (N_sensors, 9) or (N_sensors, 25) containing summary statistics for each sensor
+        np.ndarray of shape (N_sensors, _N_STATS[mode]) containing summary statistics for each sensor
     """
+    _validate_mode(mode)
     if len(times_list) != len(charges_list):
         raise ValueError("times_list and charges_list must have the same length")
 
     n_sensors = len(times_list)
-    n_stats = 25 if extended else 9
+    n_stats = _N_STATS[mode]
     # Pre-allocate results array for better performance
     results = np.empty((n_sensors, n_stats), dtype=np.float64)
 
     # Efficient batch processing
     for i, (times, charges) in enumerate(zip(times_list, charges_list)):
-        results[i] = compute_summary_stats(times, charges, extended=extended)
+        results[i] = compute_summary_stats(times, charges, mode=mode)
 
     return results

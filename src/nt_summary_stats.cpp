@@ -16,14 +16,70 @@ namespace py = pybind11;
 
 namespace {
 
+constexpr std::size_t kNumStatsMinimal = 4;
 constexpr std::size_t kNumStats = 9;
 constexpr std::size_t kNumStatsExtended = 25;
+
+enum class Mode { Minimal, Standard, Extended };
+
+constexpr std::size_t num_stats(Mode mode) {
+    switch (mode) {
+        case Mode::Minimal:  return kNumStatsMinimal;
+        case Mode::Extended: return kNumStatsExtended;
+        case Mode::Standard:
+        default:             return kNumStats;
+    }
+}
+
+Mode parse_mode(const std::string& mode) {
+    if (mode == "standard") return Mode::Standard;
+    if (mode == "minimal")  return Mode::Minimal;
+    if (mode == "extended") return Mode::Extended;
+    throw std::invalid_argument("mode must be 'standard', 'minimal', or 'extended'");
+}
 
 template<std::size_t N>
 std::array<double, N> empty_stats() {
     std::array<double, N> stats{};
     stats.fill(0.0);
     return stats;
+}
+
+// Minimal summary stats: {total_charge, first_pulse_time, charge_weighted_mean,
+// charge_weighted_std}. All four are permutation-invariant, so this does NOT
+// assume the input is time-sorted.
+std::array<double, kNumStatsMinimal> compute_minimal(
+    const std::vector<double>& times,
+    const std::vector<double>& charges) {
+    const std::size_t n = times.size();
+    if (n == 0) {
+        return empty_stats<kNumStatsMinimal>();
+    }
+
+    double total_charge = 0.0;
+    double sum_qt = 0.0;
+    double sum_qt2 = 0.0;
+    double min_time = times[0];
+
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t = times[i];
+        const double q = charges[i];
+        total_charge += q;
+        sum_qt += q * t;
+        sum_qt2 += q * t * t;
+        if (t < min_time) min_time = t;
+    }
+
+    double weighted_mean = 0.0;
+    double weighted_std = 0.0;
+    if (total_charge > 0.0) {
+        weighted_mean = sum_qt / total_charge;
+        const double variance = (sum_qt2 / total_charge) - (weighted_mean * weighted_mean);
+        weighted_std = variance > 0.0 ? std::sqrt(variance) : 0.0;
+    }
+
+    return std::array<double, kNumStatsMinimal>{
+        total_charge, min_time, weighted_mean, weighted_std};
 }
 
 bool is_sorted(const std::vector<double>& values) {
@@ -283,27 +339,38 @@ auto compute_stats_from_sorted(
     }
 }
 
-template<bool Extended>
+template<Mode M>
 auto compute_stats_single_sensor_impl(
     std::vector<double> times,
     std::vector<double> charges,
     const std::optional<double>& grouping_window_ns) {
-    constexpr std::size_t NumStats = Extended ? kNumStatsExtended : kNumStats;
-
     if (times.empty()) {
-        return empty_stats<NumStats>();
+        return empty_stats<num_stats(M)>();
     }
 
-    if (!is_sorted(times)) {
-        sort_by_time(times, charges);
-    }
+    const bool grouping = grouping_window_ns.has_value() && grouping_window_ns.value() > 0.0;
 
-    if (grouping_window_ns.has_value() && grouping_window_ns.value() > 0.0) {
-        auto grouped = group_hits_by_window(times, charges, grouping_window_ns.value());
-        return compute_stats_from_sorted<Extended>(grouped.first, grouped.second);
+    if constexpr (M == Mode::Minimal) {
+        // Minimal stats are order-independent, so sorting is only needed when
+        // grouping (which collapses hits into time-ordered windows).
+        if (grouping) {
+            if (!is_sorted(times)) {
+                sort_by_time(times, charges);
+            }
+            auto grouped = group_hits_by_window(times, charges, grouping_window_ns.value());
+            return compute_minimal(grouped.first, grouped.second);
+        }
+        return compute_minimal(times, charges);
+    } else {
+        if (!is_sorted(times)) {
+            sort_by_time(times, charges);
+        }
+        if (grouping) {
+            auto grouped = group_hits_by_window(times, charges, grouping_window_ns.value());
+            return compute_stats_from_sorted<M == Mode::Extended>(grouped.first, grouped.second);
+        }
+        return compute_stats_from_sorted<M == Mode::Extended>(times, charges);
     }
-
-    return compute_stats_from_sorted<Extended>(times, charges);
 }
 
 template<std::size_t N>
@@ -319,7 +386,9 @@ py::array_t<double> to_array(const std::array<double, N>& stats) {
 py::array_t<double> compute_summary_stats_py(
     py::array_t<double, py::array::c_style | py::array::forcecast> times,
     py::array_t<double, py::array::c_style | py::array::forcecast> charges,
-    bool extended) {
+    const std::string& mode) {
+    const Mode mode_enum = parse_mode(mode);
+
     if (times.ndim() != 1 || charges.ndim() != 1) {
         throw std::invalid_argument("times and charges must be 1D arrays");
     }
@@ -336,14 +405,26 @@ py::array_t<double> compute_summary_stats_py(
     {
         // Heavy compute section; allow other Python threads to run.
         py::gil_scoped_release release;
-        if (extended) {
-            auto stats = compute_stats_single_sensor_impl<true>(std::move(times_vec), std::move(charges_vec), std::nullopt);
-            py::gil_scoped_acquire acquire;
-            result = to_array(stats);
-        } else {
-            auto stats = compute_stats_single_sensor_impl<false>(std::move(times_vec), std::move(charges_vec), std::nullopt);
-            py::gil_scoped_acquire acquire;
-            result = to_array(stats);
+        switch (mode_enum) {
+            case Mode::Minimal: {
+                auto stats = compute_stats_single_sensor_impl<Mode::Minimal>(std::move(times_vec), std::move(charges_vec), std::nullopt);
+                py::gil_scoped_acquire acquire;
+                result = to_array(stats);
+                break;
+            }
+            case Mode::Extended: {
+                auto stats = compute_stats_single_sensor_impl<Mode::Extended>(std::move(times_vec), std::move(charges_vec), std::nullopt);
+                py::gil_scoped_acquire acquire;
+                result = to_array(stats);
+                break;
+            }
+            case Mode::Standard:
+            default: {
+                auto stats = compute_stats_single_sensor_impl<Mode::Standard>(std::move(times_vec), std::move(charges_vec), std::nullopt);
+                py::gil_scoped_acquire acquire;
+                result = to_array(stats);
+                break;
+            }
         }
     }
     return result;
@@ -353,7 +434,9 @@ py::array_t<double> process_sensor_data_py(
     py::array_t<double, py::array::c_style | py::array::forcecast> times,
     py::object charges_obj,
     std::optional<double> grouping_window_ns,
-    bool extended) {
+    const std::string& mode) {
+    const Mode mode_enum = parse_mode(mode);
+
     if (times.ndim() != 1) {
         throw std::invalid_argument("sensor_times must be a 1D array");
     }
@@ -378,19 +461,31 @@ py::array_t<double> process_sensor_data_py(
     py::array_t<double> result;
     {
         py::gil_scoped_release release;
-        if (extended) {
-            auto stats = compute_stats_single_sensor_impl<true>(std::move(times_vec), std::move(charges_vec), grouping_window_ns);
-            py::gil_scoped_acquire acquire;
-            result = to_array(stats);
-        } else {
-            auto stats = compute_stats_single_sensor_impl<false>(std::move(times_vec), std::move(charges_vec), grouping_window_ns);
-            py::gil_scoped_acquire acquire;
-            result = to_array(stats);
+        switch (mode_enum) {
+            case Mode::Minimal: {
+                auto stats = compute_stats_single_sensor_impl<Mode::Minimal>(std::move(times_vec), std::move(charges_vec), grouping_window_ns);
+                py::gil_scoped_acquire acquire;
+                result = to_array(stats);
+                break;
+            }
+            case Mode::Extended: {
+                auto stats = compute_stats_single_sensor_impl<Mode::Extended>(std::move(times_vec), std::move(charges_vec), grouping_window_ns);
+                py::gil_scoped_acquire acquire;
+                result = to_array(stats);
+                break;
+            }
+            case Mode::Standard:
+            default: {
+                auto stats = compute_stats_single_sensor_impl<Mode::Standard>(std::move(times_vec), std::move(charges_vec), grouping_window_ns);
+                py::gil_scoped_acquire acquire;
+                result = to_array(stats);
+                break;
+            }
         }
     }
 
-    // Override n_pulses with pre-grouping count when grouping is applied
-    if (extended && grouping_window_ns.has_value() && grouping_window_ns.value() > 0.0) {
+    // Override n_pulses with pre-grouping count when grouping is applied (extended only)
+    if (mode_enum == Mode::Extended && grouping_window_ns.has_value() && grouping_window_ns.value() > 0.0) {
         auto buf = result.mutable_unchecked<1>();
         buf(21) = pre_grouping_n;
     }
@@ -408,7 +503,9 @@ py::tuple process_event_arrays_py(
     py::object charges_obj,
     std::optional<double> grouping_window_ns,
     std::optional<int> /*n_threads*/,
-    bool extended) {
+    const std::string& mode) {
+    const Mode mode_enum = parse_mode(mode);
+
     if (string_ids.ndim() != 1 || sensor_ids.ndim() != 1 || times.ndim() != 1 ||
         pos_x.ndim() != 1 || pos_y.ndim() != 1 || pos_z.ndim() != 1) {
         throw std::invalid_argument("All event arrays must be 1D");
@@ -442,7 +539,7 @@ py::tuple process_event_arrays_py(
     }
 
     // Data structures computed without holding the GIL
-    const std::size_t num_stats = extended ? kNumStatsExtended : kNumStats;
+    const std::size_t n_stats = num_stats(mode_enum);
     std::vector<std::size_t> order(n_hits);
     std::vector<std::size_t> sensor_offsets;
     std::vector<std::array<double, 3>> sensor_positions_local;
@@ -485,7 +582,7 @@ py::tuple process_event_arrays_py(
             sensor_offsets.push_back(n_hits);
 
             const std::size_t n_sensors = sensor_positions_local.size();
-            sensor_stats_flat.reserve(n_sensors * num_stats);
+            sensor_stats_flat.reserve(n_sensors * n_stats);
 
             for (std::size_t s = 0; s < n_sensors; ++s) {
                 const std::size_t start = sensor_offsets[s];
@@ -500,25 +597,31 @@ py::tuple process_event_arrays_py(
                     charges_slice.push_back(charges_vec[idx]);
                 }
 
-                if (extended) {
-                    auto stats = compute_stats_single_sensor_impl<true>(
-                        std::move(times_slice),
-                        std::move(charges_slice),
-                        grouping_window_ns
-                    );
-                    sensor_stats_flat.insert(sensor_stats_flat.end(), stats.begin(), stats.end());
-                } else {
-                    auto stats = compute_stats_single_sensor_impl<false>(
-                        std::move(times_slice),
-                        std::move(charges_slice),
-                        grouping_window_ns
-                    );
-                    sensor_stats_flat.insert(sensor_stats_flat.end(), stats.begin(), stats.end());
+                switch (mode_enum) {
+                    case Mode::Minimal: {
+                        auto stats = compute_stats_single_sensor_impl<Mode::Minimal>(
+                            std::move(times_slice), std::move(charges_slice), grouping_window_ns);
+                        sensor_stats_flat.insert(sensor_stats_flat.end(), stats.begin(), stats.end());
+                        break;
+                    }
+                    case Mode::Extended: {
+                        auto stats = compute_stats_single_sensor_impl<Mode::Extended>(
+                            std::move(times_slice), std::move(charges_slice), grouping_window_ns);
+                        sensor_stats_flat.insert(sensor_stats_flat.end(), stats.begin(), stats.end());
+                        break;
+                    }
+                    case Mode::Standard:
+                    default: {
+                        auto stats = compute_stats_single_sensor_impl<Mode::Standard>(
+                            std::move(times_slice), std::move(charges_slice), grouping_window_ns);
+                        sensor_stats_flat.insert(sensor_stats_flat.end(), stats.begin(), stats.end());
+                        break;
+                    }
                 }
             }
 
             // Extended-only post-processing: n_string_neighbors and n_pulses override
-            if (extended) {
+            if (mode_enum == Mode::Extended) {
                 // HLC-style neighbor count: same string, +-2 sensor_id, +-1000ns coincidence
                 for (std::size_t s = 0; s < n_sensors; ++s) {
                     int count = 0;
@@ -545,13 +648,13 @@ py::tuple process_event_arrays_py(
                         }
                         if (coincident) ++count;
                     }
-                    sensor_stats_flat[s * num_stats + 23] = static_cast<double>(count);
+                    sensor_stats_flat[s * n_stats + 23] = static_cast<double>(count);
                 }
 
                 // Override n_pulses with pre-grouping count when grouping is applied
                 if (grouping_window_ns.has_value() && grouping_window_ns.value() > 0.0) {
                     for (std::size_t s = 0; s < n_sensors; ++s) {
-                        sensor_stats_flat[s * num_stats + 21] =
+                        sensor_stats_flat[s * n_stats + 21] =
                             static_cast<double>(sensor_offsets[s + 1] - sensor_offsets[s]);
                     }
                 }
@@ -562,7 +665,7 @@ py::tuple process_event_arrays_py(
     // With the GIL held, materialise the Python arrays for output
     if (n_hits == 0) {
         py::array_t<double> empty_positions(py::array::ShapeContainer{py::ssize_t(0), py::ssize_t(3)});
-        py::array_t<double> empty_stats(py::array::ShapeContainer{py::ssize_t(0), static_cast<py::ssize_t>(num_stats)});
+        py::array_t<double> empty_stats(py::array::ShapeContainer{py::ssize_t(0), static_cast<py::ssize_t>(n_stats)});
         return py::make_tuple(empty_positions, empty_stats);
     }
 
@@ -573,7 +676,7 @@ py::tuple process_event_arrays_py(
         py::ssize_t(3)});
     py::array_t<double> stats(py::array::ShapeContainer{
         static_cast<py::ssize_t>(n_sensors),
-        static_cast<py::ssize_t>(num_stats)});
+        static_cast<py::ssize_t>(n_stats)});
 
     auto positions_buf = positions.mutable_unchecked<2>();
     for (std::size_t i = 0; i < n_sensors; ++i) {
@@ -584,8 +687,8 @@ py::tuple process_event_arrays_py(
 
     auto stats_buf = stats.mutable_unchecked<2>();
     for (std::size_t i = 0; i < n_sensors; ++i) {
-        for (std::size_t j = 0; j < num_stats; ++j) {
-            stats_buf(i, j) = sensor_stats_flat[i * num_stats + j];
+        for (std::size_t j = 0; j < n_stats; ++j) {
+            stats_buf(i, j) = sensor_stats_flat[i * n_stats + j];
         }
     }
 
@@ -601,7 +704,7 @@ PYBIND11_MODULE(_native, m) {
           &compute_summary_stats_py,
           py::arg("times"),
           py::arg("charges"),
-          py::arg("extended") = false,
+          py::arg("mode") = "standard",
           "Compute summary statistics for a single sensor.");
 
     m.def("process_sensor_data",
@@ -609,7 +712,7 @@ PYBIND11_MODULE(_native, m) {
           py::arg("times"),
           py::arg("charges") = py::none(),
           py::arg("grouping_window_ns") = py::none(),
-          py::arg("extended") = false,
+          py::arg("mode") = "standard",
           "Process sensor data with an optional grouping window.");
 
     m.def("process_event_arrays",
@@ -623,6 +726,6 @@ PYBIND11_MODULE(_native, m) {
           py::arg("charges") = py::none(),
           py::arg("grouping_window_ns") = py::none(),
           py::arg("n_threads") = py::none(),
-          py::arg("extended") = false,
+          py::arg("mode") = "standard",
           "Process full event arrays into positions and summary statistics.");
 }
